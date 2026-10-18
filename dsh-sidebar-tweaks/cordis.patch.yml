@@ -1,0 +1,6 @@
+# dsh-sidebar-tweaks bundle patch：只插入一行插件。
+# 浏览器侧的真正代码通过 package.json 的 dsh.client 声明被发现；
+# 宿主侧是空实现（lib/index.js），只为让这一行在 host Loader 里解析得到。
+- insert:
+    - id: dsh-sidebar-tweaks
+      name: 'dsh-sidebar-tweaks'

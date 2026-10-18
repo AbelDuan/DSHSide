@@ -1,0 +1,23 @@
+# 依赖
+/node_modules/
+**/node_modules/
+
+# 日志与调试产物
+*.log
+*.log.*
+
+# 本地备份 / 临时文件（锚定到仓库根，避免递归误伤子目录）
+/*.bak
+/*.bak-*
+/*.broken-*
+/*.orig
+/*.restored
+/patch*.cjs
+/build-*.cjs
+/fix-*.cjs
+/final-scan.cjs
+
+# 系统文件
+.DS_Store
+Thumbs.db
+desktop.ini

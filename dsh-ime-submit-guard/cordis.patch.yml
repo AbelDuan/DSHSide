@@ -1,0 +1,6 @@
+# dsh-ime-submit-guard bundle patch：只插入一行插件。
+# 浏览器侧通过 package.json 的 dsh.client 声明被发现；
+# 宿主侧是空 apply（src/index.ts），只为让这一行在 host Loader 里存在。
+- insert:
+    - id: dsh-ime-submit-guard
+      name: 'dsh-ime-submit-guard'

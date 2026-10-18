@@ -1,0 +1,19 @@
+# 本插件部署到 Linux 设备（DSH rootfs），强制 LF，避免 CRLF 混入。
+# 之前往设备推 shell 脚本时，CRLF 导致变量末尾多出 \r，踩过坑。
+* text=auto eol=lf
+
+# 二进制文件不做行尾转换
+*.png  binary
+*.jpg  binary
+*.webp binary
+*.zip  binary
+*.apk  binary
+
+# shell / 脚本必须 LF
+*.sh   text eol=lf
+*.mjs  text eol=lf
+*.js   text eol=lf
+*.ts   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf

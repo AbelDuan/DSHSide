@@ -1,0 +1,17 @@
+# 默认按文本处理，检出时统一用 LF
+* text=auto eol=lf
+
+# 明确：shell 脚本必须 LF（CRLF 会让设备上的 sh 无法执行）
+*.sh text eol=lf
+*.cjs text eol=lf
+*.mjs text eol=lf
+*.js text eol=lf
+*.ts text eol=lf
+*.yml text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+
+# 二进制
+*.png binary
+*.jpg binary
+*.zip binary
