@@ -17,12 +17,14 @@
 |---|---|---|
 | 阻止输入法自动发送 | ✅ 已实现 | 拦 `compositionend`，宿主不再自动发送 |
 | 键盘只在点击输入框时唤起 | ✅ 已实现 | 用 `inputmode="none"`，仅在 touch **起始点**落在输入框内时移除 |
-| 语音输入**丢字**修复 | ⚠️ 未完成 | 唯一可用的写入通道 `ClipboardEvent('paste')` 是**追加**语义，截断修复未验证成功 |
+| 语音输入**丢字**修复 | 🔧 已重写待验证 | 旧路径「先删光再粘贴」是丢字的元凶（合成事件不可靠，删掉却贴不回来）。已改为**原子写入优先**（Lexical 内部 API → `execCommand`），旧的删除+粘贴降级为兜底 |
 | 侧边栏图标层级重排 | ✅ 已实现 | 纯 CSS 驱动，见 §4 |
 | 状态栏安全区自适应 | ✅ 已实现 | 实测 `pad = max(0, envTop − frameTop)` |
 | 竖屏点会话自动收起侧边栏 | ✅ 已实现 | 横屏不收起 |
 | 切换侧边栏不跳变 | ✅ 已实现 | 三条根因均已消除，见 §3 |
 | 输入法唤起时侧边栏不弹跳 | ✅ 已实现 | 不再覆盖宿主的 viewport meta |
+| **App 外壳挖孔避让导致的跳变** | ✅ 已修复 | 外壳注入 `#__dsh_folk_insets__` 反复改写 `#root` padding；插件用 `html body #root` 覆盖，见 §界面跳变 |
+| **会话页首帧压状态栏** | ✅ 已修复 | 外壳 insets 是异步算的，首帧还没补上；插件主动钉住顶部 padding |
 
 ## 3. 已证实的结论（含死路，别重走）
 
@@ -147,6 +149,154 @@ JS 最多延迟 `SCAN_INTERVAL_MS`，状态切换时会**先按旧值渲染一�
   `INSERT_TEXT_COMMAND` 在此宿主**不存在**；`el.textContent = …` ❌ 被吞掉且累积；
   `ClipboardEvent('paste')` ✅ 唯一真实可用，但**追加**语义。
 
+## 3.5 界面跳变的真因：App 外壳的挖孔避让注入（2026-10-19 定稿）
+
+> **这是耗时最长、弯路最多的一段。结论已用数据钉死，别再从这个方向以外的路找。**
+
+### 症状
+
+横屏下界面内容（会话区、侧边栏图标）会**「右下左上」跳一次**，或**左右横跳**、**上下跳一下**。
+
+### 真因
+
+**不是 DSH、不是插件、不是键盘、不是输入法** —— 是 **DSH Folk App 外壳**注入的：
+
+```html
+<style id="__dsh_folk_insets__">   <!-- App 原生代码注入；DSH 与插件都碰不到定义处 -->
+  #root { box-sizing: border-box !important; padding: 65px 65px 20px 0px !important; }
+```
+
+它按**「上右下左」**反复改写 `#root` 的 padding：
+
+| padding（上 右 下 左） | 视觉效果 |
+|---|---|
+| `0px` | 正常 |
+| `65px 0 0` | 下移 65 |
+| `65px 0 20px` | 下移 65、上移 20 |
+| **`65px 65px 0 0`** | **下移 65、左移 65** ← 摄像头在右 |
+| **`65px 65px 20px 0`** | **下移 65、左移 65、上移 20** |
+
+`#root` 是 `border-box`，**宽度恒为 1096 不变**，padding 从内部吃掉空间
+→ 内容列在 **816px ↔ 751px** 之间跳（实测 `cw` 1096 ↔ 1031）。
+
+### 一眼判据
+
+- **摄像头转到左下** → 界面「**往上右**」跳
+- **摄像头转到右上** → 界面「**往右下**」跳
+- 与 `dumpsys window displays` 的 `ROTATION_90 左 126px / ROTATION_270 右 126px` 完全吻合
+
+### 修复：覆盖，且特异性必须压过它
+
+```css
+/* ⚠ 必须用 html body 前缀把特异性抬到 (1,0,2)，压过外壳的 (1,0,0)，
+      否则「谁后注入谁赢」，结果随加载顺序漂移 */
+html body #root{padding-left:0 !important;padding-right:0 !important}   /* 不避让摄像头 */
+html body #root{padding-bottom:20px !important}                          /* 底栏开合不上下跳 */
+html body #root{padding-top:max(65px,env(safe-area-inset-top,0px)) !important}  /* 首帧不压状态栏 */
+```
+
+| 规则 | 为什么 |
+|---|---|
+| 左右清零 | 用户明确「**不需要页面避让摄像头**」 |
+| 底部钉 20px | 实测 `ih=775→750`（底栏弹出）时外壳把 `padding-bottom` 从 `20` 改 `0` → 图标上下跳 |
+| 顶部钉住 | 外壳 insets 是**异步**算的，首帧 `padding-top` 还是 0 → 会话页刚打开压状态栏；唤输入法触发 resize 后才补上 |
+
+### ❌ 走过的弯路（记录以免重蹈）
+
+| 曾经的错误方向 | 实际 |
+|---|---|
+| 怪 `dsh-sidebar-tweaks` 插件 | ❌ A/B 停用后**照样跳** |
+| 怪 `dsh-web-mobile` | ❌ 停用后**照样跳** |
+| 怪键盘高度变化（`ih` 775→445） | ❌ 悬浮键盘也跳；实测 `kb=0` 时也跳 |
+| 怪输入法（微信输入法工具栏） | ❌ 换成小米输入法照样跳 |
+| 怪视口跨 1024 阈值 | ❌ 实测 `iw` 恒为 1096，从未跨过 |
+| 加 `maximum-scale=1` | ⚠️ 治标，且引入新问题，后已移除 |
+| 加 `overflow-x:hidden` | ⚠️ 无效（横向本来就没溢出） |
+| 全量禁动画 | ⚠️ 无效（不是动画问题） |
+
+### 🎯 排查这类问题的正确顺序（血泪教训）
+
+1. **先做 A/B 隔离**（停用插件看现象是否消失），**不要先改代码**
+2. **拿运行时数据**：容器内起 HTTP 收集服务 + 插件用 `new Image().src` 上报
+3. **沿 DOM 祖先链逐层测宽度**，找出**第一个变化的元素**
+4. **扫 `document.styleSheets` 找命中该元素的规则**，读 `ownerNode.id` 指认注入者
+   （这一步直接抓出 `#__dsh_folk_insets__`）
+5. 确认根因后再改，改完**用同一套采集复验**（数值不变才算修好）
+
+### 📡 数据采集链路（容器连不上 WebView CDP 时的唯一出路）
+
+本机 `/proc/net/unix` **没有 `webview_devtools_remote`**（调试未开），
+**logcat 也不收 WebView console**，容器内**无 ffmpeg / PIL / numpy**
+（apt 因 proot 拿不到 dpkg 锁装不上）。
+
+**可行替代** —— 容器内起服务，让页面主动上报：
+
+```bash
+cd /tmp && cat > collector.js <<'EOF'
+const http=require('http'),fs=require('fs');
+http.createServer((q,r)=>{fs.appendFileSync('/tmp/kb_events.log',
+  new Date().toISOString()+' '+q.url+'\n');
+  r.writeHead(200,{'access-control-allow-origin':'*'});r.end('ok');}).listen(3099,'0.0.0.0');
+EOF
+setsid nohup node collector.js >/tmp/collector.out 2>&1 </dev/null &
+```
+
+插件侧 `new Image().src = 'http://127.0.0.1:3099/log?...'`，
+**只在数值变化时发**（否则刷屏）。用完记得关掉、删掉临时上报代码。
+
+> ⚠️ App 能访问 `127.0.0.1:3080`（DSH 自身），说明**容器端口对 WebView 可见**。
+
+## 3.6 听写丢字的真因与修法（2026-10-19）
+
+### 症状
+
+语音输入说完一段话，输入框内容**先完整显示、再突然变短**（用户原话：「偶尔会自动修剪」）。
+
+### 真因
+
+旧 `repairIfTruncated` 的「先删光、再粘贴」：
+
+```js
+deleteBackwards(el, cur.length + 2);   // 连发 N 个合成 Backspace
+setTimeout(function () {
+  if (textOf(el).length !== 0) return; // 校验一旦放行就往下走
+  pasteText(el, want);                 // 再发一个合成 paste
+}, SETTLE_MS);
+```
+
+三个失败点叠加：
+
+| 步骤 | 问题 |
+|---|---|
+| `deleteBackwards` | 合成 `KeyboardEvent('keydown', Backspace)` —— **Lexical 常忽略** |
+| 清空校验 | `length !== 0 → return`，一旦通过就继续 |
+| `pasteText` | 合成 `ClipboardEvent('paste')` —— **同样常被忽略**，且语义是**追加**不是替换 |
+
+**结果：删掉了、贴不回来 → 内容净丢失。**
+
+### 修法：原子写入优先，删除+粘贴降级为兜底
+
+```js
+if (setComposerText(el, want)) {   // 一步替换整段，无「删空」中间态
+  ...验证...; return;
+}
+legacyDeleteAndPaste(el, want);    // 仅在原子写入不可用时
+```
+
+`setComposerText` 的两条路：
+
+1. **Lexical 内部 API** —— 从元素上的 `__lexicalEditor` 取实例，
+   节点构造器从 `ed._nodes` 取（`'root'` / `'paragraph'` / `'text'`），
+   在 `ed.update(fn, {discrete:true})` 里 `root.clear()` 后重建段落
+2. **`execCommand('insertText')`** —— 先 `selectNodeContents` 全选，再插入 = 整段替换
+
+### ⚠️ 两个反直觉点（都实测过）
+
+- **`window.__lexical` 恒为 undefined** —— 官方包**没有任何 Lexical 全局暴露**。
+  按 `window.__lexical` 写的那段代码**永远进不去、等于空转**。必须走元素上的 `__lexicalEditor`。
+- **`ClipboardEvent('paste')` 是「追加」语义**，不是替换 ——
+  这也是它不能当主路径的原因之一。
+
 ## 4. 最终布局方案（纯 CSS，零 JS 时序）
 
 ```css
@@ -203,9 +353,12 @@ dsh-sidebar-tweaks/
 
 按优先级：
 
-1. **语音输入丢字**（唯一未完成项）。方向：`ClipboardEvent('paste')` 是追加语义，
-   需要"先清空再粘贴"或找到能替换全文的通道。宿主基于 Lexical，
-   可考虑直接操作 Lexical 的 editor state（注意此宿主缺少标准 command 常量）。
+1. **语音输入丢字** —— 🔧 **已重写，待设备验证**（见 §3.6）。
+   已按原 TODO 的建议改为操作 Lexical editor state（`setComposerText` 原子写入），
+   旧的「先删光再粘贴」降级为兜底。
+   **待办**：真机用微信输入法说一段话，确认内容不再被修剪。
+   若仍丢字，下一步查 `ed._nodes` 的节点构造器签名是否与预期一致
+   （当前按 `new ParaNode()` / `new TextNode(text)` 调用）。
 2. 补一条**收起/展开两态的截图回归**，避免以后改动再次引入跳变。
 3. `verify.mjs` 的假 DOM 目前不含 rail 子树，rail 分支只有设备侧验证覆盖；
    可补一个含 `panelList` / `searchButton` / `iconButton` 的假树，让排序逻辑也进单测。

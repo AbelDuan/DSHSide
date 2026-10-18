@@ -1,0 +1,10 @@
+# dsh-mobile-tweaks bundle patch：只插入一行插件。
+#
+# 本插件由两个原本独立的纯客户端插件合并而成：
+#   · dsh-sidebar-tweaks   —— 侧边栏重排 / 状态栏避让 / 挖孔跳变修复
+#   · dsh-ime-submit-guard —— 输入法（听写）提交保护 / 焦点保护
+# 浏览器侧的真正代码通过 package.json 的 dsh.client 声明被发现；
+# 宿主侧是空实现（lib/index.js），只为让这一行在 host Loader 里解析得到。
+- insert:
+    - id: dsh-mobile-tweaks
+      name: 'dsh-mobile-tweaks'
