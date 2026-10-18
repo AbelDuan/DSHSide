@@ -78,7 +78,49 @@ JS 最多延迟 `SCAN_INTERVAL_MS`，状态切换时会**先按旧值渲染一�
 
 **正解**：只在缺少 `viewport-fit` 时补上，**绝不整段覆盖**。
 
-### 3.5 其它实测结论
+### 3.5 不要动 AppFrame 的盒模型（状态栏补白的坑）
+
+**症状**：手机重启后打开 DSH，侧边栏「往一边跳一下，再回到左贴边」。
+
+**根因**：状态栏补白公式在**启动瞬间误判**。启动时 frame 还在顶部（`frameTop=0`）
+而状态栏 inset 已有值（65），`max(0, min(envTop, envTop - frameTop))` 算出 65 →
+给 frame 加了 `box-sizing:border-box` + `padding-top:65px` → **frame 缩小 65px、右移 65px**
+→ 约 3 秒后 app 自己把 frame 内缩好，`pad` 归零、标记移除 → 又弹回来。
+
+**证据**（时间线探针，冷启动后截图）：
+
+```
+ 706ms  fw=1096 fx=0  mk=-     正常
+2001ms  fw=1096 fx=0  mk=1     标记被加上
+3001ms  fw=1031 fx=65 mk=1     ← 缩小 65px、右移 65px
+5001ms  fw=1096 fx=0  mk=-     ← 标记移除
+```
+
+`fw` 恰好 −65、`fx` 恰好 +65，且**精确跟随 frame 标记**。
+
+**修法**：① `pad = 0` 时**主动移除** frame 标记，不留任何盒模型改动；
+② 启动后 **5 秒内一律不补白**。修复后九个时间点 `fw=1096 fx=0 mk=-` 全程不变。
+
+> **铁律**：app 的 frame 是 **CSS grid 容器**，侧边栏收起靠 **grid track 滑动**，
+> app 自己的注释写着 "nothing reflows mid-slide"。对 frame 的任何盒模型改动
+> 都会扰动轨道尺寸 —— 默认什么都不做，要改必须有实测依据。
+
+**后续发现（同样是实测）**：输入法唤起/收起时侧边栏「往右跳一下再跳回」，
+**是 app 自身行为，与本插件无关** —— 已用「桩实验」证明：把插件换成
+只保留探针、零业务逻辑的桩，现象完全相同：
+
+```
+桩环境下   fw=1031 fx=65  logoX=77  logoW=256  col=null   （持续 ~400ms）
+           fw=1096 fx=0   logoX=12  logoW=256  col=null   （恢复）
+```
+
+`logoX` 正好 +65px、`logoW` 不变、`col=null` → `resize` 时 **app 自己把 frame
+内缩 65px**（该方向的 safe-area inset），随后恢复。
+
+⚠️ **不要在本插件里加补偿**：内缩是瞬时的（400~800ms），而插件轮询是 600ms，
+补偿只会更抖。这是 app 侧的问题。
+
+### 3.6 其它实测结论
 
 - **WebView 的 `console.log` 不会进 logcat**。验证只能靠页面可见载体
   （角标 / `document.title` / 屏幕截图）。

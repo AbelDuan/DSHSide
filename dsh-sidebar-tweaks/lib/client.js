@@ -89,8 +89,6 @@ var ORDER = [
  * 另：env() 只有在 viewport meta 带 viewport-fit=cover 时才非 0，故仍需认领 meta。
  */
 var VIEWPORT_CONTENT = 'width=device-width, initial-scale=1, viewport-fit=cover';
-var FRAME_ATTR = 'data-dshsb-frame';
-var PAD_VAR = '--dshsb-pad-top';
 /*
  * 收起（rail）态的精确重排 —— 层级全部来自 2026-10-18 的 DOM 探针实测：
  *
@@ -145,14 +143,11 @@ var RAIL_CSS = [
 var RAIL_PANEL_SECOND = '92';   /* panelRow[1] = 自动化任务 */
 var RAIL_PANEL_FIRST = '94';    /* panelRow[0] = 插件 */
 
-var STATUS_BAR_CSS = '[' + FRAME_ATTR + '="1"]{' +
-  'box-sizing:border-box !important;' +
-  'padding-top:var(' + PAD_VAR + ',0px) !important;' +
-  '}';
 var SCAN_INTERVAL_MS = 600;
 var COLLAPSE_DELAY_MS = 60;
 
 var state = {
+  startedAt: 0,
   started: false,
   timer: null,
   viewportOriginal: null,
@@ -325,30 +320,6 @@ function assertViewport() {
   } catch (e) { /* ignore */ }
 }
 
-/* 用隐藏探针把 env() 读成像素值 —— JS 无法直接取 env()，只能借计算样式。 */
-function measureInsets() {
-  var d = doc();
-  if (!d || !d.body || typeof d.createElement !== 'function' || typeof window === 'undefined') {
-    return { top: 0, bottom: 0 };
-  }
-  var probe = null;
-  var top = 0;
-  var bottom = 0;
-  try {
-    probe = d.createElement('div');
-    probe.setAttribute('data-dshsb-probe', '1');
-    probe.style.cssText = 'position:absolute;left:-9999px;top:0;width:0;height:0;' +
-      'padding-top:env(safe-area-inset-top,0px);' +
-      'padding-bottom:env(safe-area-inset-bottom,0px);';
-    d.body.appendChild(probe);
-    var cs = window.getComputedStyle(probe);
-    top = parseFloat(cs.paddingTop) || 0;
-    bottom = parseFloat(cs.paddingBottom) || 0;
-  } catch (e) { /* ignore */ }
-  try { if (probe && probe.parentElement) probe.parentElement.removeChild(probe); } catch (e) { /* ignore */ }
-  return { top: top, bottom: bottom };
-}
-
 /* 布局 frame：侧边栏根之上、类名含 _frame 的祖先；它是承载内边距的正确元素。 */
 function findFrame() {
   var d = doc();
@@ -365,14 +336,6 @@ function findFrame() {
   } catch (e) { return null; }
 }
 
-function markFrame() {
-  var frame = findFrame();
-  if (!frame || typeof frame.setAttribute !== 'function') return;
-  try {
-    if (frame.getAttribute(FRAME_ATTR) !== '1') frame.setAttribute(FRAME_ATTR, '1');
-  } catch (e) { /* ignore */ }
-}
-
 function injectCss() {
   var d = doc();
   if (!d || !d.head || typeof d.createElement !== 'function') return;
@@ -380,51 +343,15 @@ function injectCss() {
     if (d.querySelector('style[data-dshsb]')) return;
     var tag = d.createElement('style');
     tag.setAttribute('data-dshsb', '1');
-    tag.textContent = STATUS_BAR_CSS + RAIL_CSS;
+    tag.textContent = RAIL_CSS;
     d.head.appendChild(tag);
   } catch (e) { /* ignore */ }
 }
 
-/*
- * 自校准：只补「env 报的状态栏高度」减去「frame 顶距」的差额。
- *
- * 实测数据（2026-10-18，设备 1672x2364 / 覆盖密度 345dpi / dpr 2.15625）：
- *     envT=65  envB=20  iH=1096  sH=1097  fT=65  c1T=130
- *
- * 结论：
- *   · app 正常工作时会把 WebView 让开状态栏，此时 fT == envT（65 == 65）→ 差额 0 → 不补。
- *     之前无条件按 env 补全量，就多补了 65px，表现为"顶部离状态栏很远"。
- *   · app 偶发未能让开时（用户报的"进 dsh 时顶部被状态栏压住、要唤起输入法才恢复"），
- *     fT 会变成 0 而 envT 仍是 65 → 差额 65 → 正好补上，重叠当场消除。
- *
- * 注意不要用 screen.height - innerHeight 推 app 的让开量：实测 sH=1097 与 iH=1096
- * 几乎相等（Android WebView 的 screen.height 不含系统栏），算出来恒为 0，会退化成全量补。
- * frame.getBoundingClientRect().top 才是可信信号 —— 而且给 frame 加 padding 不会
- * 改变它自身的 top，所以不存在自我反馈。
- */
-function syncSafeArea() {
-  var d = doc();
-  if (!d || !d.documentElement || !d.documentElement.style) return;
-  var insets = measureInsets();
-  var pad = 0;
-  if (insets.top > 0) {
-    var frame = findFrame();
-    var frameTop = 0;
-    try {
-      frameTop = frame ? (frame.getBoundingClientRect().top || 0) : 0;
-    } catch (e) { frameTop = 0; }
-    /* 夹在 [0, envT] 内：最坏退化成"不补"或"补全量"，不会出现第三种更糟的结果。 */
-    pad = Math.max(0, Math.min(insets.top, insets.top - frameTop));
-  }
-  try {
-    d.documentElement.style.setProperty(PAD_VAR, pad + 'px');
-  } catch (e) { /* ignore */ }
-}
+
 function applyStatusBar() {
   injectCss();
   assertViewport();
-  markFrame();
-  syncSafeArea();
 }
 
 function onViewportChanged() {
@@ -434,6 +361,7 @@ function onViewportChanged() {
 /* ── 启动 ─────────────────────────────────────────────────────────────────── */
 
 function start() {
+  if (!state.startedAt) state.startedAt = Date.now();
   if (state.started) return;
   var d = doc();
   if (!d) return;
